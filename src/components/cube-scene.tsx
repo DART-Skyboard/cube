@@ -729,6 +729,8 @@ export const CubeCanvas = memo(function CubeCanvas({
     let rigs: Rig[] = [];
     let buildQueue: NestCube[] = [];
     let rosterKey = "";
+    // Order-independent companion to rosterKey — see reconcile() below.
+    let rosterSortedKey = "";
     let seenSel = "";
     let detailStamp = "";
     let applied = "";
@@ -1170,17 +1172,33 @@ export const CubeCanvas = memo(function CubeCanvas({
       if (document.visibilityState === "hidden") return;
       const cubesNow = live.current.cubes;
       const key = cubesNow.map((cube) => cube.id).join("|");
+      let membershipChanged = false;
       if (key !== rosterKey) {
+        // A plain reorder of the same cubes (e.g. the live cube moving in
+        // the array) isn't a real roster change and shouldn't force a full
+        // rebuild + reframe — only an actual add/remove should. Comparing
+        // the sorted id set catches that distinction; this only runs when
+        // the cheap positional key above already differs, so it's not
+        // adding a sort to the common every-frame no-change case.
+        const sortedKey = cubesNow
+          .map((cube) => cube.id)
+          .sort()
+          .join("|");
+        membershipChanged = sortedKey !== rosterSortedKey;
+        rosterKey = key;
+        rosterSortedKey = sortedKey;
+      }
+      if (membershipChanged) {
         clearRigs();
         buildQueue = cubesNow.slice();
-        rosterKey = key;
         detailStamp = "";
         layoutDirty = true;
         framePick = true;
         needsFrame = false;
       } else if (!buildQueue.length) {
+        const rigById = new Map(rigs.map((rig) => [rig.id, rig]));
         cubesNow.forEach((cube) => {
-          const rig = rigs.find((item) => item.id === cube.id);
+          const rig = rigById.get(cube.id);
           if (!rig) return;
           if (rig.model !== cube.model || rig.slot !== cube.slot) {
             rig.model = cube.model;

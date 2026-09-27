@@ -292,7 +292,22 @@ export function SessionCube() {
         liveSlotRef.current = placed.slot;
       }
       const liveCube = { ...base, slot: liveSlotRef.current };
-      setCubes((prev) => [...prev.filter((cube) => !cube.id.startsWith("live-")), liveCube]);
+      // Replace the live cube IN PLACE at its existing array index instead
+      // of filtering it out and appending it at the end. With hundreds or
+      // thousands of other cubes present, always moving it to the end
+      // reordered the whole array on every single poll — and the scene's
+      // roster-change detection is an order-dependent join of every cube's
+      // id, so that reordering alone (nothing actually added or removed)
+      // was enough to trigger a full rig rebuild + reframe every 5s poll,
+      // which a large roster can't even finish before the next poll
+      // restarts it.
+      setCubes((prev) => {
+        const index = prev.findIndex((cube) => cube.id.startsWith("live-"));
+        if (index === -1) return [...prev, liveCube];
+        const next = prev.slice();
+        next[index] = liveCube;
+        return next;
+      });
       setLiveCubeId(LIVE_ID);
       setLiveActive(active);
       setLiveStatus(status);
