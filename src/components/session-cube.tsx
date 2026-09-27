@@ -1,9 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { BookOpen, Eye, Pause, Play, RotateCcw, X } from "lucide-react";
+import { BookOpen, Copy, Eye, Pause, Play, RotateCcw, X } from "lucide-react";
 import { sessionExport } from "@/data/session-cube";
 import {
   assignStacks,
+  cloneCube,
   cubeFromRaw,
   loadCubeFiles,
   realizeCube,
@@ -182,6 +183,7 @@ export function SessionCube() {
   const [busy, setBusy] = useState(false);
   const [stackDims, setStackDims] = useState({ x: 10, y: 10, z: 10 });
   const [newStack, setNewStack] = useState(true);
+  const [cloneCount, setCloneCount] = useState(1);
   const [range, setRange] = useState({ from: 1, to: 1 });
   const [followAll, setFollowAll] = useState(true);
   const [privacyOpen, setPrivacyOpen] = useState(false);
@@ -497,6 +499,45 @@ export function SessionCube() {
     setStep(stepsRef.current[primary] ?? 0);
   }, []);
 
+  const cloneSelected = useCallback(() => {
+    const count = Math.max(1, Math.min(5000, Math.round(cloneCount) || 1));
+    const sources = cubesRef.current.filter((cube) => selectedIdsRef.current.includes(cube.id));
+    if (!sources.length) return;
+    // Cloning the live cube is just cloning whatever raw data it holds at
+    // this instant — the clone gets an ordinary id (not "live-...") so the
+    // live poll's own cleanup/replace logic never touches it again. It sits
+    // there as an independent snapshot; the original keeps updating live.
+    const newClones: LoadedCube[] = [];
+    for (const source of sources) {
+      for (let i = 0; i < count; i += 1) {
+        newClones.push(cloneCube(source, `${source.name} #${i + 1}`));
+      }
+    }
+    if (!newClones.length) return;
+    const first = newClones[0];
+    setBusy(true);
+    setNotice(`Cloning ${newClones.length} cube${newClones.length === 1 ? "" : "s"}…`);
+    flushSync(() => {
+      setCubes((prev) => {
+        // Same stack dimensions / "start a new stack" setting the import
+        // panel already exposes, so a clone run fills a stack to capacity
+        // and spills into a new one (spaced by stackGap) exactly the same
+        // way an import batch does — this is the same code path, just fed
+        // duplicated cubes instead of freshly parsed files.
+        const placed = assignStacks(prev, newClones, stackDims, newStack);
+        const next = [...prev, ...placed];
+        return next.map((cube) => (cube.id === first.id ? realizeCube(cube) : shellCube(cube)));
+      });
+      setSelectedIds([first.id]);
+    });
+    selectedIdsRef.current = [first.id];
+    setStep(0);
+    stepsRef.current[first.id] = 0;
+    setFollowAll(true);
+    setBusy(false);
+    setNotice(`Added ${newClones.length} clone${newClones.length === 1 ? "" : "s"}.`);
+  }, [cloneCount, stackDims, newStack]);
+
   const togglePlay = useCallback(() => {
     masterRef.current = false;
     setMaster(false);
@@ -694,6 +735,35 @@ export function SessionCube() {
                 <button type="button" onClick={() => selectCube("")} className="rounded-full bg-panel-2 px-3 py-2 text-xs text-mist">
                   None
                 </button>
+                <div className="flex items-center gap-1 rounded-full bg-panel-2 py-1 pr-1 pl-3">
+                  <label htmlFor="clone-count" className="font-mono text-xs text-mist">
+                    ×
+                  </label>
+                  <input
+                    id="clone-count"
+                    type="number"
+                    min={1}
+                    max={5000}
+                    value={cloneCount}
+                    onChange={(event) => setCloneCount(Math.max(1, Math.min(5000, Number(event.target.value) || 1)))}
+                    className="w-14 bg-transparent font-mono text-xs text-bone outline-none"
+                    aria-label="Number of clones to make per selected cube"
+                  />
+                  <button
+                    type="button"
+                    onClick={cloneSelected}
+                    disabled={!selectedIds.length || busy}
+                    title={
+                      selectedIds.length
+                        ? `Add ${cloneCount} cop${cloneCount === 1 ? "y" : "ies"} of each of the ${selectedIds.length} selected cube${selectedIds.length === 1 ? "" : "s"}`
+                        : "Select a cube first"
+                    }
+                    className="flex items-center gap-1 rounded-full bg-brass px-3 py-1.5 text-xs font-medium text-ink disabled:opacity-40"
+                  >
+                    <Copy className="size-3.5" />
+                    Clone
+                  </button>
+                </div>
                 <button
                   type="button"
                   aria-pressed={liveOn}

@@ -63,6 +63,19 @@ export function shellCube(cube: LoadedCube): LoadedCube {
   return { ...cube, realized: false, model: buildModel(cube.raw, false) };
 }
 
+export function cloneCube(cube: LoadedCube, label?: string): LoadedCube {
+  // raw/model are never mutated in place elsewhere (realizeCube/shellCube
+  // always return a new object), so it's safe for clones to share the
+  // same raw/model reference instead of deep-copying potentially large
+  // session data per clone — only the id needs to be unique.
+  return {
+    ...cube,
+    id: nextId("clone"),
+    name: label ?? cube.name,
+    slot: { stack: 0, x: 0, y: 0, z: 0, nx: 1, ny: 1, nz: 1 },
+  };
+}
+
 function clampDim(value: number): number {
   const n = Math.round(Number(value));
   if (!Number.isFinite(n)) return 1;

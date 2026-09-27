@@ -1007,7 +1007,7 @@ export const CubeCanvas = memo(function CubeCanvas({
         spanY = Math.max(spanY, ySpan(rig.model, next.explode));
       }
       const gap = 2;
-      const stackGap = 5;
+      const stackGap = 10;
       const pitchX = spanX + gap;
       const pitchY = spanY + gap;
       const pitchZ = spanZ + gap;
@@ -1267,6 +1267,11 @@ export const CubeCanvas = memo(function CubeCanvas({
     };
     const onUp = (event: PointerEvent) => {
       if (Math.hypot(event.clientX - downX, event.clientY - downY) > 6) return;
+      // Tapping to select/focus is also "the user is engaged with this
+      // view" — arm the same lock that dragging does, so someone who only
+      // ever taps cubes (never orbits) still gets protected from the
+      // live-feed's own periodic auto-frame.
+      userTouchedCamera = true;
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
