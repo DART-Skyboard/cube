@@ -227,6 +227,9 @@ export function SessionCube() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [stackDims, setStackDims] = useState({ x: 10, y: 10, z: 10 });
+  // Most cubes a stack holds before the next stack starts. This is the
+  // source of truth for capacity; layers-up (Y) is derived from it.
+  const [stackCap, setStackCap] = useState(1000);
   const [newStack, setNewStack] = useState(true);
   const [cloneCount, setCloneCount] = useState(1);
   const [range, setRange] = useState({ from: 1, to: 1 });
@@ -575,6 +578,7 @@ export function SessionCube() {
     }
     if (!newClones.length) return;
     const first = newClones[0];
+    let placedClones: LoadedCube[] = newClones;
     setBusy(true);
     setNotice(`Cloning ${newClones.length} cube${newClones.length === 1 ? "" : "s"}…`);
     flushSync(() => {
@@ -584,8 +588,8 @@ export function SessionCube() {
         // and spills into a new one (spaced by stackGap) exactly the same
         // way an import batch does — this is the same code path, just fed
         // duplicated cubes instead of freshly parsed files.
-        const placed = assignStacks(prev, newClones, stackDims, newStack);
-        const next = [...prev, ...placed];
+        placedClones = assignStacks(prev, newClones, { ...stackDims, cap: stackCap }, newStack);
+        const next = [...prev, ...placedClones];
         return next.map((cube) => (cube.id === first.id ? realizeCube(cube) : shellCube(cube)));
       });
       setSelectedIds([first.id]);
@@ -595,8 +599,11 @@ export function SessionCube() {
     stepsRef.current[first.id] = 0;
     setFollowAll(true);
     setBusy(false);
-    setNotice(`Added ${newClones.length} clone${newClones.length === 1 ? "" : "s"}.`);
-  }, [cloneCount, stackDims, newStack]);
+    // Say the multiplication out loud: the count is per selected cube.
+    const made = `${newClones.length} clone${newClones.length === 1 ? "" : "s"}`;
+    const per = sources.length > 1 ? ` (${count} × ${sources.length} selected cubes)` : "";
+    setNotice(`Added ${made}${per} in ${stackSummary(placedClones)}.`);
+  }, [cloneCount, stackDims, stackCap, newStack]);
 
   const togglePlay = useCallback(() => {
     masterRef.current = false;
@@ -634,7 +641,7 @@ export function SessionCube() {
     let placed = incoming;
     flushSync(() => {
       setCubes((prev) => {
-        placed = assignStacks(prev, incoming, stackDims, newStack);
+        placed = assignStacks(prev, incoming, { ...stackDims, cap: stackCap }, newStack);
         const next = [...prev, ...placed];
         return next.map((cube) => (cube.id === first.id ? realizeCube(cube) : shellCube(cube)));
       });
@@ -656,15 +663,7 @@ export function SessionCube() {
       }, 1600);
     }
     const extra = errors.length ? ` ${errors.length} skipped.` : "";
-    const dimsByStack = new Map<number, string>();
-    for (const cube of placed) dimsByStack.set(cube.slot.stack, `${cube.slot.nx}×${cube.slot.ny}×${cube.slot.nz}`);
-    const dimKinds = [...new Set(dimsByStack.values())];
-    const stackCount = dimsByStack.size;
-    const stacked =
-      dimKinds.length === 1
-        ? `${stackCount} ${stackCount === 1 ? "stack" : "stacks"} of ${dimKinds[0]}`
-        : `${stackCount} stacks`;
-    setNotice(`Added ${incoming.length} ${incoming.length === 1 ? "cube" : "cubes"} in ${stacked}.${extra}`);
+    setNotice(`Added ${incoming.length} ${incoming.length === 1 ? "cube" : "cubes"} in ${stackSummary(placed)}.${extra}`);
   };
 
   const patch = (partial: Partial<CubeView>) => setView((current) => ({ ...current, ...partial }));
@@ -674,9 +673,38 @@ export function SessionCube() {
   const heading = node?.events[0] ? eventTitle(node.events[0]) : "Open corridor";
   const meanPath = average(briefs.map((brief) => brief.pathLength));
   const meanEvents = average(briefs.map((brief) => brief.events));
-  const perStack = [stackDims.x, stackDims.y, stackDims.z]
-    .map((value) => Math.min(10000, Math.max(1, Math.round(Number(value)) || 1)))
-    .reduce((product, value) => product * value, 1);
+  const clampN = (value: number, max: number) => Math.min(max, Math.max(1, Math.round(Number(value)) || 1));
+  const layersFor = (cap: number, x: number, z: number) => Math.max(1, Math.ceil(cap / (x * z)));
+  // Editing the footprint keeps the capacity and recomputes the layers.
+  const setFootprint = (key: "x" | "z", value: number) =>
+    setStackDims((dims) => {
+      const next = { ...dims, [key]: clampN(value, 10000) };
+      return { ...next, y: layersFor(stackCap, next.x, next.z) };
+    });
+  // Editing the capacity keeps the footprint and recomputes the layers.
+  const changeStackCap = (value: number) => {
+    const cap = clampN(value, 100000);
+    setStackCap(cap);
+    setStackDims((dims) => ({ ...dims, y: layersFor(cap, dims.x, dims.z) }));
+  };
+  // Editing layers sets the capacity to that many full layers.
+  const setLayers = (value: number) => {
+    const y = clampN(value, 10000);
+    setStackDims((dims) => ({ ...dims, y }));
+    setStackCap(clampN(y * stackDims.x * stackDims.z, 100000));
+  };
+  const stackSummary = (cubes: LoadedCube[]) => {
+    const counts = new Map<number, number>();
+    for (const cube of cubes) counts.set(cube.slot.stack, (counts.get(cube.slot.stack) ?? 0) + 1);
+    const runs: { size: number; n: number }[] = [];
+    for (const size of counts.values()) {
+      const last = runs[runs.length - 1];
+      if (last && last.size === size) last.n += 1;
+      else runs.push({ size, n: 1 });
+    }
+    const total = counts.size;
+    return `${total} ${total === 1 ? "stack" : "stacks"} (${runs.map((run) => (run.n > 1 ? `${run.n} × ${run.size}` : `${run.size}`)).join(", ")})`;
+  };
 
   const setRangeField = (key: "from" | "to", value: number) => {
     setFollowAll(false);
@@ -809,6 +837,11 @@ export function SessionCube() {
                     className="w-14 bg-transparent font-mono text-xs text-bone outline-none"
                     aria-label="Number of clones to make per selected cube"
                   />
+                  {selectedIds.length > 1 ? (
+                    <span className="font-mono text-[10px] text-mist" title="The count is made for each selected cube">
+                      ={cloneCount * selectedIds.length}
+                    </span>
+                  ) : null}
                   <button
                     type="button"
                     onClick={cloneSelected}
@@ -866,7 +899,7 @@ export function SessionCube() {
                     title="Across"
                     suppressHydrationWarning
                     onChange={(event) =>
-                      setStackDims((dims) => ({ ...dims, x: Math.min(10000, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
+                      setFootprint("x", Number(event.target.value))
                     }
                   />
                   <span>across</span>
@@ -883,7 +916,7 @@ export function SessionCube() {
                     title="Layers up"
                     suppressHydrationWarning
                     onChange={(event) =>
-                      setStackDims((dims) => ({ ...dims, y: Math.min(10000, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
+                      setLayers(Number(event.target.value))
                     }
                   />
                   <span>layers up</span>
@@ -900,12 +933,24 @@ export function SessionCube() {
                     title="Deep"
                     suppressHydrationWarning
                     onChange={(event) =>
-                      setStackDims((dims) => ({ ...dims, z: Math.min(10000, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
+                      setFootprint("z", Number(event.target.value))
                     }
                   />
                   <span>deep</span>
                 </label>
-                <span className="font-mono text-bone">{perStack} per stack</span>
+                <label className="flex items-center gap-1" title="Most cubes in one stack. When it is full, the next cube starts a new stack.">
+                  <input
+                    className="w-20 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    type="number"
+                    min={1}
+                    max={100000}
+                    value={stackCap}
+                    aria-label="Cubes per stack"
+                    suppressHydrationWarning
+                    onChange={(event) => changeStackCap(Number(event.target.value))}
+                  />
+                  <span>per stack</span>
+                </label>
                 <label className="flex items-center gap-1" title="Off keeps filling the last stack">
                   <input
                     type="checkbox"

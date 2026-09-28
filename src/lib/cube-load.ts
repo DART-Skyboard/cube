@@ -9,6 +9,8 @@ export type CubeSlot = {
   nx: number;
   ny: number;
   nz: number;
+  /** Max cubes this stack holds. Absent on older slots, where it is nx*ny*nz. */
+  cap?: number;
 };
 
 export type LoadedCube = {
@@ -99,72 +101,78 @@ function clampDim(value: number): number {
   return Math.min(10000, Math.max(1, n));
 }
 
-/** Fill order is x (across), then z (deep), then y (layers up). Existing cubes are not mutated. */
+function clampCap(value: number): number {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(100000, Math.max(1, n));
+}
+
+/**
+ * Fill order is x (across), then z (deep), then y (layers up). Existing cubes
+ * are not mutated.
+ *
+ * `dims.cap` is how many cubes a stack holds before the next one starts. When
+ * it is omitted it is x*y*z, as before. When it is given, x and z are the
+ * footprint and the number of layers is derived from it (a stack of 250 on a
+ * 10x10 footprint is 3 layers, the last one half full), so the cap can be any
+ * number, not just a product of the three dimensions.
+ */
 export function assignStacks(
   existing: LoadedCube[],
   incoming: LoadedCube[],
-  dims: { x: number; y: number; z: number },
+  dims: { x: number; y: number; z: number; cap?: number },
   startNew: boolean,
 ): LoadedCube[] {
   const nxReq = clampDim(dims.x);
-  const nyReq = clampDim(dims.y);
   const nzReq = clampDim(dims.z);
+  const capReq = dims.cap != null ? clampCap(dims.cap) : nxReq * clampDim(dims.y) * nzReq;
+  const nyReq = Math.max(1, Math.ceil(capReq / (nxReq * nzReq)));
   let maxStack = -1;
   for (const cube of existing) maxStack = Math.max(maxStack, cube.slot.stack);
 
-  let stack: number;
-  let nx: number;
-  let ny: number;
-  let nz: number;
-  let next: number;
+  let stack = 0;
+  let nx = nxReq;
+  let ny = nyReq;
+  let nz = nzReq;
+  let cap = capReq;
+  let next = 0;
+
+  const openStack = (index: number) => {
+    stack = index;
+    nx = nxReq;
+    ny = nyReq;
+    nz = nzReq;
+    cap = capReq;
+    next = 0;
+    maxStack = index;
+  };
 
   if (existing.length === 0) {
-    stack = 0;
-    nx = nxReq;
-    ny = nyReq;
-    nz = nzReq;
-    next = 0;
-    maxStack = 0;
+    openStack(0);
   } else if (startNew) {
-    stack = maxStack + 1;
-    nx = nxReq;
-    ny = nyReq;
-    nz = nzReq;
-    next = 0;
-    maxStack = stack;
+    openStack(maxStack + 1);
   } else {
+    // Keep filling the last stack under the capacity it was created with,
+    // even if the capacity input has changed since.
     const last = existing[existing.length - 1].slot;
     nx = clampDim(last.nx);
     ny = clampDim(last.ny);
     nz = clampDim(last.nz);
+    cap = last.cap != null ? clampCap(last.cap) : nx * ny * nz;
     stack = last.stack;
     next = last.x + nx * (last.z + nz * last.y) + 1;
-    if (next >= nx * ny * nz) {
-      stack = maxStack + 1;
-      nx = nxReq;
-      ny = nyReq;
-      nz = nzReq;
-      next = 0;
-      maxStack = stack;
-    }
+    if (next >= cap) openStack(maxStack + 1);
   }
 
   return incoming.map((cube) => {
-    if (next >= nx * ny * nz) {
-      stack = maxStack + 1;
-      nx = nxReq;
-      ny = nyReq;
-      nz = nzReq;
-      next = 0;
-      maxStack = stack;
-    }
+    if (next >= cap) openStack(maxStack + 1);
     const layer = nx * nz;
     const y = Math.floor(next / layer);
     const rem = next - y * layer;
     const z = Math.floor(rem / nx);
     const x = rem - z * nx;
     next += 1;
-    return { ...cube, slot: { stack, x, y, z, nx, ny, nz } };
+    return { ...cube, slot: { stack, x, y, z, nx, ny, nz, cap } };
   });
 }
 
