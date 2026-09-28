@@ -166,6 +166,75 @@ function Readout({ model }: { model: CubeModel }) {
   );
 }
 
+// A number field you can actually edit. The old inputs turned an empty field
+// into 1 on every keystroke (`Number("") || 1`), so a stray "1" could never be
+// deleted and typing 5000 gave 15000. This one shows exactly what you type,
+// including nothing at all, applies each valid number as you go, selects the
+// whole value when you tap it so typing replaces it, and only snaps back to
+// the real value when you leave the field.
+function NumberField({
+  value,
+  onCommit,
+  max,
+  blankable = false,
+  className,
+  label,
+  title,
+  placeholder,
+  id,
+}: {
+  value: number | null;
+  onCommit: (next: number | null) => void;
+  max: number;
+  blankable?: boolean;
+  className?: string;
+  label: string;
+  title?: string;
+  placeholder?: string;
+  id?: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <input
+      id={id}
+      className={className}
+      type="text"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      autoComplete="off"
+      value={draft ?? (value == null ? "" : String(value))}
+      placeholder={placeholder}
+      aria-label={label}
+      title={title}
+      suppressHydrationWarning
+      // Select after the tap/click finishes; selecting during focus gets undone
+      // when the pointer is released, so typing would append instead of replace.
+      onFocus={(event) => {
+        const el = event.target;
+        setTimeout(() => el.select(), 0);
+      }}
+      onChange={(event) => {
+        const digits = event.target.value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+        if (digits === "") {
+          setDraft("");
+          if (blankable) onCommit(null);
+          return;
+        }
+        const n = parseInt(digits, 10);
+        if (n < 1) {
+          setDraft(digits);
+          return;
+        }
+        // Over the limit: snap to it right away so the field says what will happen.
+        const clamped = Math.min(max, n);
+        setDraft(String(clamped));
+        onCommit(clamped);
+      }}
+      onBlur={() => setDraft(null)}
+    />
+  );
+}
+
 // The cube list is memoized and uses a Set for membership. It used to be
 // inline: every row called selectedIds.includes() twice, so with ~1,200
 // cubes selected each render did ~3 million string comparisons, and
@@ -231,7 +300,7 @@ export function SessionCube() {
   // source of truth for capacity; layers-up (Y) is derived from it.
   const [stackCap, setStackCap] = useState(1000);
   const [newStack, setNewStack] = useState(true);
-  const [cloneCount, setCloneCount] = useState(1);
+  const [cloneCount, setCloneCount] = useState<number | null>(null); // blank = 1
   const [range, setRange] = useState({ from: 1, to: 1 });
   const [followAll, setFollowAll] = useState(true);
   const [privacyOpen, setPrivacyOpen] = useState(false);
@@ -563,7 +632,7 @@ export function SessionCube() {
   }, []);
 
   const cloneSelected = useCallback(() => {
-    const count = Math.max(1, Math.min(5000, Math.round(cloneCount) || 1));
+    const count = Math.max(1, Math.min(5000, cloneCount ?? 1));
     const sources = cubesRef.current.filter((cube) => selectedIdsRef.current.includes(cube.id));
     if (!sources.length) return;
     // Cloning the live cube is just cloning whatever raw data it holds at
@@ -827,19 +896,19 @@ export function SessionCube() {
                   <label htmlFor="clone-count" className="font-mono text-xs text-mist">
                     ×
                   </label>
-                  <input
+                  <NumberField
                     id="clone-count"
-                    type="number"
-                    min={1}
-                    max={5000}
                     value={cloneCount}
-                    onChange={(event) => setCloneCount(Math.max(1, Math.min(5000, Number(event.target.value) || 1)))}
-                    className="w-14 bg-transparent font-mono text-xs text-bone outline-none"
-                    aria-label="Number of clones to make per selected cube"
+                    blankable
+                    max={5000}
+                    onCommit={setCloneCount}
+                    placeholder="1"
+                    className="w-14 bg-transparent font-mono text-xs text-bone outline-none placeholder:text-mist"
+                    label="Number of clones to make per selected cube"
                   />
                   {selectedIds.length > 1 ? (
                     <span className="font-mono text-[10px] text-mist" title="The count is made for each selected cube">
-                      ={cloneCount * selectedIds.length}
+                      ={(cloneCount ?? 1) * selectedIds.length}
                     </span>
                   ) : null}
                   <button
@@ -848,7 +917,7 @@ export function SessionCube() {
                     disabled={!selectedIds.length || busy}
                     title={
                       selectedIds.length
-                        ? `Add ${cloneCount} cop${cloneCount === 1 ? "y" : "ies"} of each of the ${selectedIds.length} selected cube${selectedIds.length === 1 ? "" : "s"}`
+                        ? `Add ${cloneCount ?? 1} cop${(cloneCount ?? 1) === 1 ? "y" : "ies"} of each of the ${selectedIds.length} selected cube${selectedIds.length === 1 ? "" : "s"}`
                         : "Select a cube first"
                     }
                     className="flex items-center gap-1 rounded-full bg-brass px-3 py-1.5 text-xs font-medium text-ink disabled:opacity-40"
@@ -889,65 +958,47 @@ export function SessionCube() {
               <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-none text-mist">
                 <label className="flex items-center gap-1">
                   X
-                  <input
-                    className="w-16 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
-                    type="number"
-                    min={1}
-                    max={10000}
+                  <NumberField
                     value={stackDims.x}
-                    aria-label="Stack X across"
+                    max={10000}
+                    onCommit={(next) => next != null && setFootprint("x", next)}
+                    className="w-16 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    label="Stack X across"
                     title="Across"
-                    suppressHydrationWarning
-                    onChange={(event) =>
-                      setFootprint("x", Number(event.target.value))
-                    }
                   />
                   <span>across</span>
                 </label>
                 <label className="flex items-center gap-1">
                   Y
-                  <input
-                    className="w-16 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
-                    type="number"
-                    min={1}
-                    max={10000}
+                  <NumberField
                     value={stackDims.y}
-                    aria-label="Stack Y layers up"
+                    max={10000}
+                    onCommit={(next) => next != null && setLayers(next)}
+                    className="w-16 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    label="Stack Y layers up"
                     title="Layers up"
-                    suppressHydrationWarning
-                    onChange={(event) =>
-                      setLayers(Number(event.target.value))
-                    }
                   />
                   <span>layers up</span>
                 </label>
                 <label className="flex items-center gap-1">
                   Z
-                  <input
-                    className="w-16 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
-                    type="number"
-                    min={1}
-                    max={10000}
+                  <NumberField
                     value={stackDims.z}
-                    aria-label="Stack Z deep"
+                    max={10000}
+                    onCommit={(next) => next != null && setFootprint("z", next)}
+                    className="w-16 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    label="Stack Z deep"
                     title="Deep"
-                    suppressHydrationWarning
-                    onChange={(event) =>
-                      setFootprint("z", Number(event.target.value))
-                    }
                   />
                   <span>deep</span>
                 </label>
                 <label className="flex items-center gap-1" title="Most cubes in one stack. When it is full, the next cube starts a new stack.">
-                  <input
-                    className="w-20 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
-                    type="number"
-                    min={1}
-                    max={100000}
+                  <NumberField
                     value={stackCap}
-                    aria-label="Cubes per stack"
-                    suppressHydrationWarning
-                    onChange={(event) => changeStackCap(Number(event.target.value))}
+                    max={100000}
+                    onCommit={(next) => next != null && changeStackCap(next)}
+                    className="w-20 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    label="Cubes per stack"
                   />
                   <span>per stack</span>
                 </label>
@@ -989,26 +1040,20 @@ export function SessionCube() {
                 </button>
                 <label className="flex items-center gap-1 font-mono text-xs text-mist">
                   Range
-                  <input
-                    className="w-14 rounded-lg bg-panel-2 px-2 py-1 text-bone"
-                    type="number"
-                    min={1}
-                    max={cubes.length}
+                  <NumberField
                     value={range.from}
-                    aria-label="First cube in the master range"
-                    suppressHydrationWarning
-                    onChange={(event) => setRangeField("from", Number(event.target.value))}
+                    max={Math.max(1, cubes.length)}
+                    onCommit={(next) => next != null && setRangeField("from", next)}
+                    className="w-14 rounded-lg bg-panel-2 px-2 py-1 text-bone"
+                    label="First cube in the master range"
                   />
                   to
-                  <input
-                    className="w-14 rounded-lg bg-panel-2 px-2 py-1 text-bone"
-                    type="number"
-                    min={1}
-                    max={cubes.length}
+                  <NumberField
                     value={range.to}
-                    aria-label="Last cube in the master range"
-                    suppressHydrationWarning
-                    onChange={(event) => setRangeField("to", Number(event.target.value))}
+                    max={Math.max(1, cubes.length)}
+                    onCommit={(next) => next != null && setRangeField("to", next)}
+                    className="w-14 rounded-lg bg-panel-2 px-2 py-1 text-bone"
+                    label="Last cube in the master range"
                   />
                 </label>
               </div>
