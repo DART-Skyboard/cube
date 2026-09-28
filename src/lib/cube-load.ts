@@ -42,12 +42,29 @@ function collectExports(value: unknown): RawExport[] {
   return [];
 }
 
+// Models are pure functions of their raw export, and clones share the same
+// raw object, so cache by raw identity. Without this, selecting 1,200 clones
+// ran buildModel() 1,200 times (millions of wall objects) for identical
+// data. With it, every clone of a session shares one wall model and one
+// bare model.
+const modelCache = new WeakMap<RawExport, { walls?: CubeModel; bare?: CubeModel }>();
+
+function modelFor(raw: RawExport, withWalls: boolean): CubeModel {
+  let entry = modelCache.get(raw);
+  if (!entry) {
+    entry = {};
+    modelCache.set(raw, entry);
+  }
+  if (withWalls) return (entry.walls ??= buildModel(raw, true));
+  return (entry.bare ??= buildModel(raw, false));
+}
+
 export function cubeFromRaw(raw: RawExport, name: string, withWalls: boolean, id?: string): LoadedCube {
   return {
     id: id ?? nextId("cube"),
     name,
     raw,
-    model: buildModel(raw, withWalls),
+    model: modelFor(raw, withWalls),
     realized: withWalls,
     slot: { stack: 0, x: 0, y: 0, z: 0, nx: 1, ny: 1, nz: 1 },
   };
@@ -55,12 +72,12 @@ export function cubeFromRaw(raw: RawExport, name: string, withWalls: boolean, id
 
 export function realizeCube(cube: LoadedCube): LoadedCube {
   if (cube.realized) return cube;
-  return { ...cube, realized: true, model: buildModel(cube.raw, true) };
+  return { ...cube, realized: true, model: modelFor(cube.raw, true) };
 }
 
 export function shellCube(cube: LoadedCube): LoadedCube {
   if (!cube.realized) return cube;
-  return { ...cube, realized: false, model: buildModel(cube.raw, false) };
+  return { ...cube, realized: false, model: modelFor(cube.raw, false) };
 }
 
 export function cloneCube(cube: LoadedCube, label?: string): LoadedCube {

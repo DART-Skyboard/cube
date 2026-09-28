@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { BookOpen, Copy, Eye, Pause, Play, RotateCcw, X } from "lucide-react";
 import { sessionExport } from "@/data/session-cube";
@@ -165,6 +165,51 @@ function Readout({ model }: { model: CubeModel }) {
     </div>
   );
 }
+
+// The cube list is memoized and uses a Set for membership. It used to be
+// inline: every row called selectedIds.includes() twice, so with ~1,200
+// cubes selected each render did ~3 million string comparisons, and
+// playback re-renders the page about 12 times a second.
+const NestList = memo(function NestList({
+  cubes,
+  selectedIds,
+  activeId,
+  onSelect,
+}: {
+  cubes: LoadedCube[];
+  selectedIds: string[];
+  activeId: string | undefined;
+  onSelect: (id: string, index: number | null) => void;
+}) {
+  const chosen = useMemo(() => new Set(selectedIds), [selectedIds]);
+  return (
+    <div className="mt-3 max-h-40 space-y-1 overflow-y-auto">
+      {cubes.map((cube, index) => {
+        const isSelected = chosen.has(cube.id);
+        return (
+          <button
+            key={cube.id}
+            type="button"
+            aria-pressed={isSelected}
+            onClick={() => onSelect(cube.id, null)}
+            className={cn(
+              "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm",
+              cube.id === activeId ? "bg-panel-2 font-medium text-bone" : isSelected ? "bg-panel-2 text-bone" : "text-mist",
+            )}
+          >
+            <span className="truncate">
+              {index + 1}. {cube.name}
+            </span>
+            <span className="shrink-0 font-mono text-xs">
+              {cube.model.width}×{cube.model.height}×{cube.model.depth}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+});
+
 
 export function SessionCube() {
   const [cubes, setCubes] = useState<LoadedCube[]>(() => [exampleCube()]);
@@ -1127,27 +1172,7 @@ export function SessionCube() {
               None
             </button>
           </div>
-          <div className="mt-3 max-h-40 space-y-1 overflow-y-auto">
-            {cubes.map((cube, index) => (
-              <button
-                key={cube.id}
-                type="button"
-                aria-pressed={selectedIds.includes(cube.id)}
-                onClick={() => selectCube(cube.id, null)}
-                className={cn(
-                  "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm",
-                  cube.id === selected?.id ? "bg-panel-2 font-medium text-bone" : selectedIds.includes(cube.id) ? "bg-panel-2 text-bone" : "text-mist",
-                )}
-              >
-                <span className="truncate">
-                  {index + 1}. {cube.name}
-                </span>
-                <span className="shrink-0 font-mono text-xs">
-                  {cube.model.width}×{cube.model.height}×{cube.model.depth}
-                </span>
-              </button>
-            ))}
-          </div>
+          <NestList cubes={cubes} selectedIds={selectedIds} activeId={selected?.id} onSelect={selectCube} />
         </div>
         {showScene ? (
           <Suspense fallback={<p className="px-1 text-sm text-mist">Building the comparison graphs…</p>}>

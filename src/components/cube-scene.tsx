@@ -731,6 +731,12 @@ export const CubeCanvas = memo(function CubeCanvas({
     // Detail (wall geometry) add/remove is throttled the same way initial
     // rig construction is below — see the reasoning at its processing site.
     let detailQueue: Rig[] = [];
+    // Which rigs currently *should* have full wall detail, and how many
+    // walls each built detail was made from (to notice a swapped maze).
+    let desiredDetail = new Set<string>();
+    const detailBuiltWalls = new Map<string, number>();
+    let detailEvalAt = 0;
+    let lastSelectedIds: string[] | null = null;
     let rosterKey = "";
     // Order-independent companion to rosterKey — see reconcile() below.
     let rosterSortedKey = "";
@@ -753,6 +759,7 @@ export const CubeCanvas = memo(function CubeCanvas({
     let aimZ = 0;
 
     const clearDetail = (rig: Rig) => {
+      detailBuiltWalls.delete(rig.id);
       if (!rig.detail) return;
       disposeTree(rig.detail);
       rig.group.remove(rig.detail);
@@ -827,6 +834,7 @@ export const CubeCanvas = memo(function CubeCanvas({
       rig.enter = enter;
       rig.leave = leave;
       rig.ghost.visible = false;
+      detailBuiltWalls.set(rig.id, wallCount(model));
     };
 
     const buildRig = (cube: NestCube): Rig => {
@@ -1205,6 +1213,7 @@ export const CubeCanvas = memo(function CubeCanvas({
           const rig = rigById.get(cube.id);
           if (!rig) return;
           if (rig.model !== cube.model || rig.slot !== cube.slot) {
+            if (rig.model !== cube.model) detailStamp = "";
             rig.model = cube.model;
             rig.slot = cube.slot;
             layoutDirty = true;
@@ -1222,43 +1231,58 @@ export const CubeCanvas = memo(function CubeCanvas({
         layoutDirty = true;
       }
       const showAll = cubesNow.length <= 1;
-      const selectedSet = new Set(live.current.selectedIds);
-      const stamp = cubesNow
-        .map((cube) => {
-          // The live cube used to be excluded here because it never had
-          // real wall data (withWalls was false). Now it does, so it
-          // should be counted/detailed the same as any other cube.
-          // Detail is shown for every cube in the multi-select set
-          // (selectedIds), not just the single last-active one
-          // (selectedId) — so "select all" / multi-select actually
-          // shows walls on every picked cube, not only the latest pick.
-          const walls = showAll || selectedSet.has(cube.id) ? wallCount(cube.model) : 0;
-          return `${cube.id}:${walls}`;
-        })
-        .join("|");
-      if (stamp !== detailStamp) {
-        // Queue detail add/remove instead of doing it for every rig that
-        // needs it in one synchronous pass. With hundreds or thousands of
-        // rigs — e.g. right after "select all" realizes a large clone
-        // batch at once — building full wall geometry for all of them in
-        // a single frame blocks the main thread long enough to look like
-        // the whole scene just reset, the same class of problem the
-        // buildQueue above already exists to avoid for initial construction.
-        detailQueue = rigs.filter((rig) => {
-          const want = showAll || selectedSet.has(rig.id);
+      const sel = live.current.selectedIds;
+      const nowT = performance.now();
+      // detailStamp === "" means something (model swap, context restore,
+      // visibility) asked for a fresh decision. Otherwise re-decide when
+      // the selection changes, or every ~0.6s so the nearest-first choice
+      // follows the camera.
+      if (detailStamp === "" || sel !== lastSelectedIds || nowT - detailEvalAt > 600) {
+        detailEvalAt = nowT;
+        lastSelectedIds = sel;
+        detailStamp = "ok";
+        const selectedSet = new Set(sel);
+        const primary = live.current.selectedId;
+        // Full wall detail is a lot of geometry per cube. Every selected
+        // cube *wants* it, but a big selection (e.g. "All" after cloning
+        // 1,200) can't all have it at once — building it for all of them
+        // overloaded the GPU, the context was lost, and the automatic
+        // recovery remounted the whole canvas (that was the "reset").
+        // So a budget of cubes get it: the primary first, then whichever
+        // selected cubes are nearest the camera, with the ones already
+        // detailed getting a distance discount so the set doesn't flicker
+        // as you orbit.
+        const budget = tightGpu ? 3 : touchGpu ? 12 : 40;
+        const cands: { rig: Rig; score: number }[] = [];
+        for (const rig of rigs) {
+          if (!(showAll || selectedSet.has(rig.id))) continue;
+          if (wallCount(rig.model) === 0) continue;
+          const score =
+            rig.id === primary
+              ? -1
+              : camera.position.distanceTo(rig.group.position) * (rig.detail ? 0.7 : 1);
+          cands.push({ rig, score });
+        }
+        cands.sort((a, b) => a.score - b.score);
+        desiredDetail = new Set(cands.slice(0, budget).map((item) => item.rig.id));
+        const removals: Rig[] = [];
+        const additions: Rig[] = [];
+        for (const rig of rigs) {
+          const want = desiredDetail.has(rig.id);
           const has = !!rig.detail;
-          if (want === has) return false;
-          return want ? wallCount(rig.model) > 0 : true;
-        });
-        detailStamp = stamp;
+          if (want && !has) additions.push(rig);
+          else if (!want && has) removals.push(rig);
+          else if (want && has && detailBuiltWalls.get(rig.id) !== wallCount(rig.model)) additions.push(rig);
+        }
+        // Free GPU memory first, then build, a few per frame (like
+        // buildQueue) so it never blocks the main thread.
+        detailQueue = removals.concat(additions);
       }
       if (detailQueue.length) {
         const batch = detailQueue.splice(0, tightGpu ? 1 : 4);
         for (const rig of batch) {
-          const want = showAll || selectedSet.has(rig.id);
-          if (want && wallCount(rig.model) > 0) {
-            if (!rig.detail) addDetail(rig);
-          } else clearDetail(rig);
+          if (desiredDetail.has(rig.id) && wallCount(rig.model) > 0) addDetail(rig);
+          else clearDetail(rig);
           if (isLiveId(rig.id)) rig.ghost.visible = false;
         }
         layoutDirty = true;
