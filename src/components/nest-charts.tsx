@@ -119,9 +119,17 @@ function Bars({ bars }: { bars: Bar[] }) {
         else material?.dispose();
       });
       renderer.dispose();
+      // dispose() alone does not release the WebGL context. Browsers cap live
+      // contexts (~16) and, past that, silently kill the OLDEST one — which
+      // was the main 3D scene. Release this one explicitly.
+      renderer.forceContextLoss();
       renderer.domElement.remove();
     };
-  }, [key, bars]);
+    // Rebuild only when the values actually change. This used to depend on
+    // `bars` too, which is a new array on every parent render, so every live
+    // poll rebuilt all three chart renderers (3 new contexts every 5 seconds).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
   return (
     <div>

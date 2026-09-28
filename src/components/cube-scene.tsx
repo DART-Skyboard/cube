@@ -735,7 +735,6 @@ export const CubeCanvas = memo(function CubeCanvas({
     // walls each built detail was made from (to notice a swapped maze).
     let desiredDetail = new Set<string>();
     const detailBuiltWalls = new Map<string, number>();
-    let detailEvalAt = 0;
     let lastSelectedIds: string[] | null = null;
     let rosterKey = "";
     // Order-independent companion to rosterKey — see reconcile() below.
@@ -1232,51 +1231,29 @@ export const CubeCanvas = memo(function CubeCanvas({
       }
       const showAll = cubesNow.length <= 1;
       const sel = live.current.selectedIds;
-      const nowT = performance.now();
       // detailStamp === "" means something (model swap, context restore,
-      // visibility) asked for a fresh decision. Otherwise re-decide when
-      // the selection changes, or every ~0.6s so the nearest-first choice
-      // follows the camera.
-      if (detailStamp === "" || sel !== lastSelectedIds || nowT - detailEvalAt > 600) {
-        detailEvalAt = nowT;
+      // visibility) asked for a fresh decision; otherwise re-decide when the
+      // selection changes. Every selected cube gets full wall detail — no cap.
+      if (detailStamp === "" || sel !== lastSelectedIds) {
         lastSelectedIds = sel;
         detailStamp = "ok";
         const selectedSet = new Set(sel);
-        const primary = live.current.selectedId;
-        // Full wall detail is a lot of geometry per cube. Every selected
-        // cube *wants* it, but a big selection (e.g. "All" after cloning
-        // 1,200) can't all have it at once — building it for all of them
-        // overloaded the GPU, the context was lost, and the automatic
-        // recovery remounted the whole canvas (that was the "reset").
-        // So a budget of cubes get it: the primary first, then whichever
-        // selected cubes are nearest the camera, with the ones already
-        // detailed getting a distance discount so the set doesn't flicker
-        // as you orbit.
-        const budget = tightGpu ? 3 : touchGpu ? 12 : 40;
-        const cands: { rig: Rig; score: number }[] = [];
-        for (const rig of rigs) {
-          if (!(showAll || selectedSet.has(rig.id))) continue;
-          if (wallCount(rig.model) === 0) continue;
-          const score =
-            rig.id === primary
-              ? -1
-              : camera.position.distanceTo(rig.group.position) * (rig.detail ? 0.7 : 1);
-          cands.push({ rig, score });
-        }
-        cands.sort((a, b) => a.score - b.score);
-        desiredDetail = new Set(cands.slice(0, budget).map((item) => item.rig.id));
+        desiredDetail = new Set<string>();
         const removals: Rig[] = [];
-        const additions: Rig[] = [];
+        const additions: { rig: Rig; dist: number }[] = [];
         for (const rig of rigs) {
-          const want = desiredDetail.has(rig.id);
+          const want = (showAll || selectedSet.has(rig.id)) && wallCount(rig.model) > 0;
           const has = !!rig.detail;
-          if (want && !has) additions.push(rig);
-          else if (!want && has) removals.push(rig);
-          else if (want && has && detailBuiltWalls.get(rig.id) !== wallCount(rig.model)) additions.push(rig);
+          if (want) desiredDetail.add(rig.id);
+          if (want && (!has || detailBuiltWalls.get(rig.id) !== wallCount(rig.model))) {
+            additions.push({ rig, dist: camera.position.distanceTo(rig.group.position) });
+          } else if (!want && has) removals.push(rig);
         }
-        // Free GPU memory first, then build, a few per frame (like
-        // buildQueue) so it never blocks the main thread.
-        detailQueue = removals.concat(additions);
+        // Nearest first so what you're looking at fills in first. Removals go
+        // before builds, and both drain a few per frame (like buildQueue) so
+        // a huge selection never blocks the main thread in one go.
+        additions.sort((a, b) => a.dist - b.dist);
+        detailQueue = removals.concat(additions.map((item) => item.rig));
       }
       if (detailQueue.length) {
         const batch = detailQueue.splice(0, tightGpu ? 1 : 4);
@@ -1509,6 +1486,8 @@ export const CubeCanvas = memo(function CubeCanvas({
       liveGlowMat.dispose();
       composer?.dispose();
       renderer.dispose();
+      // Listeners are already removed above, so this can't re-enter recovery.
+      renderer.forceContextLoss();
       renderer.domElement.remove();
     };
   }, [focusRef, playingRef, masterRef, rangeRef, stepsRef]);
