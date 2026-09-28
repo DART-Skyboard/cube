@@ -1,19 +1,21 @@
 /*
- * LEATR Live Cube — a small embeddable view of the Session Cube live feed.
+ * LEATR Live Cube - a slim, embeddable view of the Session Cube live feed.
  *
  * Drop onto any page:
  *   <div data-live-cube style="width:506px;height:506px"></div>
- *   <script src="https://cube.leatr.xyz/live-cube.js" defer></script>
+ *   <script src="live-cube.js" defer></script>
  *
  * Optional attributes on the element:
- *   data-size="5"                      window edge in cells (default 5)
  *   data-href="https://cube.leatr.xyz" where a click goes
  *   data-target="_blank"               link target (default _blank)
+ *   data-log="3"                       event log lines shown (0 hides it)
  *
- * It polls the same journal read the Session Cube uses and shows a
- * size³ window of the live maze that follows the newest step along the
- * path: frosted red walls, blue path, slow turntable. Purely visual —
- * clicking opens the full Session Cube.
+ * Reads the same live table the Session Cube polls (config.json, then the
+ * active maze's latest-export.json) and draws it the way the Session Cube's
+ * buildModel() does, at the broadcast dimensions, with no layer spread:
+ * frosted red wall panes (brighter where they line the walked path), the
+ * blue path, event nodes marked along it, and the newest analytics events
+ * in a small log. Slow turntable; clicking opens the full Session Cube.
  */
 (function () {
   "use strict";
@@ -22,12 +24,17 @@
     "https://script.google.com/macros/s/AKfycbyzkQxLR5miUXP6oDw-1AR1GIjgpzlw9iLw0gO_ZTeLfL849LWbNX7WVz_kf7yLWBKA_w/exec";
   var THREE_URL = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r132/three.min.js";
   var POLL_MS = 5000;
-  var SPIN = 0.14; // rad/s turntable
-  var WALL = "#e0473c";
-  var PATH = "#3aa8ff";
-  var HEAD = "#bfe6ff";
+  var SPIN = 0.12; // rad/s turntable
+  var COLORS = {
+    corridor: "#ff5446",
+    shell: "#d23c32",
+    quiet: "#b3302a",
+    path: "#3aa8ff",
+    event: "#9fdcff",
+    head: "#e6f6ff",
+  };
 
-  var FACES = {
+  var FACE_STEP = {
     left: [-1, 0, 0],
     right: [1, 0, 0],
     bottom: [0, -1, 0],
@@ -35,8 +42,7 @@
     back: [0, 0, -1],
     front: [0, 0, 1],
   };
-  // Faces a neighbor inside the window also draws; skip ours to avoid doubling.
-  var OWNED_BY_NEIGHBOR = { right: 1, top: 1, front: 1 };
+  var FACES = ["right", "front", "top", "left", "back", "bottom"];
 
   function withThree(cb) {
     if (window.THREE && window.THREE.InstancedMesh) return cb(window.THREE);
@@ -72,12 +78,58 @@
     });
   }
 
+  function key(x, y, z) {
+    return x + "," + y + "," + z;
+  }
+
+  // Port of the Session Cube's buildModel(): walked path from layer 0 in
+  // order, and each shared wall drawn once, classed by whether it lines the
+  // path (corridor), sits on the outer shell, or neither (quiet).
+  function buildModel(raw) {
+    var cube = raw.cube;
+    var layer = (raw.pathIndex && raw.pathIndex[0] && raw.pathIndex[0].path) || [];
+    var path = layer.slice().sort(function (a, b) {
+      return a.order - b.order;
+    });
+    var onPath = {};
+    path.forEach(function (n) {
+      onPath[key(n.x, n.y, n.z)] = 1;
+    });
+    var walls = { corridor: [], shell: [], quiet: [] };
+    var w = cube.width;
+    var h = cube.height;
+    var d = cube.depth;
+    cube.cells.forEach(function (cell) {
+      if (!cell.walls) return;
+      FACES.forEach(function (face) {
+        if (!cell.walls[face]) return;
+        if (face === "left" && cell.x !== 0) return;
+        if (face === "back" && cell.z !== 0) return;
+        if (face === "bottom" && cell.y !== 0) return;
+        var s = FACE_STEP[face];
+        var touches = onPath[key(cell.x, cell.y, cell.z)] || onPath[key(cell.x + s[0], cell.y + s[1], cell.z + s[2])];
+        var shell =
+          (face === "left" && cell.x === 0) ||
+          (face === "right" && cell.x === w - 1) ||
+          (face === "bottom" && cell.y === 0) ||
+          (face === "top" && cell.y === h - 1) ||
+          (face === "back" && cell.z === 0) ||
+          (face === "front" && cell.z === d - 1);
+        walls[touches ? "corridor" : shell ? "shell" : "quiet"].push([cell.x, cell.y, cell.z, s]);
+      });
+    });
+    var events = [];
+    path.forEach(function (n) {
+      (n.events || []).forEach(function (e) {
+        events.push(e);
+      });
+    });
+    return { width: w, height: h, depth: d, path: path, walls: walls, events: events };
+  }
+
   // A small random maze + walk so the cube is never empty while waiting.
   function demoRaw(n) {
     var cells = {};
-    var key = function (x, y, z) {
-      return x + "," + y + "," + z;
-    };
     var all = [];
     for (var x = 0; x < n; x++)
       for (var y = 0; y < n; y++)
@@ -95,9 +147,9 @@
       var cur = stack[stack.length - 1];
       path.push({ order: path.length, x: cur.x, y: cur.y, z: cur.z, events: [] });
       var options = [];
-      for (var f in FACES) {
-        var d = FACES[f];
-        var nk = key(cur.x + d[0], cur.y + d[1], cur.z + d[2]);
+      for (var f in FACE_STEP) {
+        var s = FACE_STEP[f];
+        var nk = key(cur.x + s[0], cur.y + s[1], cur.z + s[2]);
         if (cells[nk] && !seen[nk]) options.push([f, cells[nk]]);
       }
       if (!options.length) {
@@ -115,42 +167,19 @@
       totalEvents: 0,
       exportedAt: "demo",
       mode: "DEMO",
-      pathIndex: [{ layer: 0, path: path.slice(0, Math.floor(path.length * 0.6)) }],
+      pathIndex: [{ layer: 0, path: path.slice(0, Math.floor(path.length * 0.5)) }],
     };
   }
 
-  function flattenPath(raw) {
-    var out = [];
-    (raw.pathIndex || []).forEach(function (layer) {
-      (layer.path || []).forEach(function (node) {
-        out.push(node);
-      });
-    });
-    out.sort(function (a, b) {
-      return a.order - b.order;
-    });
-    return out;
-  }
-
-  // Pick the n³ window that contains the newest path step, clamped to the maze.
-  function windowFor(raw, path, n) {
-    var cube = raw.cube;
-    var head = path[path.length - 1] || { x: 0, y: 0, z: 0 };
-    var lo = function (v, dim) {
-      return Math.max(0, Math.min(Math.max(0, dim - n), v - Math.floor(n / 2)));
-    };
-    return {
-      x: lo(head.x, cube.width),
-      y: lo(head.y, cube.height),
-      z: lo(head.z, cube.depth),
-      nx: Math.min(n, cube.width),
-      ny: Math.min(n, cube.height),
-      nz: Math.min(n, cube.depth),
-    };
+  function eventLine(e) {
+    var label = String(e.label || "").replace(/_/g, " ");
+    var detail = e.detail != null && e.detail !== "" ? " " + e.detail : "";
+    var m = /T(\d{2}:\d{2}:\d{2})/.exec(e.ts || "");
+    return (m ? m[1] + "  " : "") + label + detail;
   }
 
   function ditherTexture(THREE) {
-    // 4×4 Bayer pattern → frosted, dithered look on the wall panels.
+    // 4x4 Bayer pattern -> frosted, dithered wall panes.
     var bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
     var px = 32;
     var cv = document.createElement("canvas");
@@ -173,9 +202,9 @@
   }
 
   function mount(el, THREE) {
-    var n = Math.max(2, Math.min(10, parseInt(el.getAttribute("data-size") || "5", 10) || 5));
     var href = el.getAttribute("data-href") || "https://cube.leatr.xyz";
     var target = el.getAttribute("data-target") || "_blank";
+    var logLines = Math.max(0, parseInt(el.getAttribute("data-log") || "3", 10) || 0);
 
     if (getComputedStyle(el).position === "static") el.style.position = "relative";
     el.style.cursor = "pointer";
@@ -192,22 +221,26 @@
     renderer.domElement.style.height = "100%";
     el.appendChild(renderer.domElement);
 
+    var hud = document.createElement("div");
+    hud.style.cssText =
+      "position:absolute;left:10px;bottom:8px;right:10px;font:600 11px/1.45 ui-monospace,Menlo,monospace;" +
+      "letter-spacing:.06em;color:#bfe6ff;text-shadow:0 1px 3px #000;pointer-events:none;text-align:left";
+    var log = document.createElement("div");
+    log.style.cssText = "font-weight:500;opacity:.85";
     var badge = document.createElement("div");
-    badge.style.cssText =
-      "position:absolute;left:10px;bottom:8px;font:600 11px/1.2 ui-monospace,Menlo,monospace;" +
-      "letter-spacing:.08em;color:#bfe6ff;text-shadow:0 1px 3px #000;pointer-events:none;display:flex;gap:6px;align-items:center";
+    badge.style.cssText = "display:flex;gap:6px;align-items:center";
     var dot = document.createElement("span");
     dot.style.cssText = "width:7px;height:7px;border-radius:50%;background:#8ea39a;display:inline-block";
     var label = document.createElement("span");
     label.textContent = "SESSION CUBE";
     badge.appendChild(dot);
     badge.appendChild(label);
-    el.appendChild(badge);
+    hud.appendChild(log);
+    hud.appendChild(badge);
+    el.appendChild(hud);
 
     var scene = new THREE.Scene();
-    var camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
-    camera.position.set(0, n * 1.15, n * 3.0);
-    camera.lookAt(0, 0, 0);
+    var camera = new THREE.PerspectiveCamera(32, 1, 0.1, 200);
     scene.add(new THREE.AmbientLight(0xffffff, 0.75));
     var sun = new THREE.DirectionalLight(0xffffff, 0.6);
     sun.position.set(3, 6, 4);
@@ -219,104 +252,121 @@
     var content = new THREE.Group();
     turntable.add(content);
 
-    var wallMat = new THREE.MeshBasicMaterial({
-      color: WALL,
-      map: ditherTexture(THREE),
-      transparent: true,
-      opacity: 0.45,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    var pathMat = new THREE.MeshStandardMaterial({ color: PATH, emissive: PATH, emissiveIntensity: 0.55, roughness: 0.4 });
-    var headMat = new THREE.MeshStandardMaterial({ color: HEAD, emissive: PATH, emissiveIntensity: 1.2 });
-    var linkMat = new THREE.LineBasicMaterial({ color: PATH, transparent: true, opacity: 0.7 });
-    var frameMat = new THREE.LineBasicMaterial({ color: WALL, transparent: true, opacity: 0.35 });
+    var dither = ditherTexture(THREE);
+    function paneMat(color, opacity) {
+      return new THREE.MeshBasicMaterial({
+        color: color,
+        map: dither,
+        transparent: true,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+    }
+    var wallMats = { corridor: paneMat(COLORS.corridor, 0.5), shell: paneMat(COLORS.shell, 0.26), quiet: paneMat(COLORS.quiet, 0.16) };
+    var pathMat = new THREE.MeshStandardMaterial({ color: COLORS.path, emissive: COLORS.path, emissiveIntensity: 0.55, roughness: 0.4 });
+    var eventMat = new THREE.MeshStandardMaterial({ color: COLORS.event, emissive: COLORS.path, emissiveIntensity: 1.0 });
+    var headMat = new THREE.MeshStandardMaterial({ color: COLORS.head, emissive: COLORS.path, emissiveIntensity: 1.4 });
+    var linkMat = new THREE.LineBasicMaterial({ color: COLORS.path, transparent: true, opacity: 0.75 });
     var wallGeo = new THREE.PlaneGeometry(0.92, 0.92);
-    var nodeGeo = new THREE.BoxGeometry(0.34, 0.34, 0.34);
-    var headGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+    var nodeGeo = new THREE.BoxGeometry(0.26, 0.26, 0.26);
+    var eventGeo = new THREE.BoxGeometry(0.44, 0.44, 0.44);
+    var headGeo = new THREE.BoxGeometry(0.56, 0.56, 0.56);
+    var shared = [wallGeo, nodeGeo, eventGeo, headGeo];
     var head = null;
     var lastKey = "";
+    var lastDims = "";
 
     function clear() {
       while (content.children.length) {
         var child = content.children.pop();
-        if (child.geometry && child.geometry !== wallGeo && child.geometry !== nodeGeo && child.geometry !== headGeo)
-          child.geometry.dispose();
+        if (child.geometry && shared.indexOf(child.geometry) === -1) child.geometry.dispose();
         if (child.dispose) child.dispose();
       }
       head = null;
     }
 
+    function frame(model) {
+      var dims = model.width + "x" + model.height + "x" + model.depth;
+      if (dims === lastDims) return;
+      lastDims = dims;
+      var span = Math.max(model.width, model.height, model.depth);
+      camera.position.set(0, span * 1.1, span * 2.9);
+      camera.lookAt(0, 0, 0);
+    }
+
     function build(raw) {
-      var path = flattenPath(raw);
-      var w = windowFor(raw, path, n);
-      var inWin = function (c) {
-        return c.x >= w.x && c.x < w.x + w.nx && c.y >= w.y && c.y < w.y + w.ny && c.z >= w.z && c.z < w.z + w.nz;
-      };
-      var cx = w.x + (w.nx - 1) / 2;
-      var cy = w.y + (w.ny - 1) / 2;
-      var cz = w.z + (w.nz - 1) / 2;
+      var model = buildModel(raw);
+      var cx = (model.width - 1) / 2;
+      var cy = (model.height - 1) / 2;
+      var cz = (model.depth - 1) / 2;
       clear();
+      frame(model);
 
-      // Walls
-      var faces = [];
-      raw.cube.cells.forEach(function (cell) {
-        if (!inWin(cell) || !cell.walls) return;
-        for (var f in FACES) {
-          if (!cell.walls[f]) continue;
-          var d = FACES[f];
-          if (OWNED_BY_NEIGHBOR[f] && inWin({ x: cell.x + d[0], y: cell.y + d[1], z: cell.z + d[2] })) continue;
-          faces.push([cell.x - cx + d[0] * 0.5, cell.y - cy + d[1] * 0.5, cell.z - cz + d[2] * 0.5, d]);
-        }
-      });
-      if (faces.length) {
-        var walls = new THREE.InstancedMesh(wallGeo, wallMat, faces.length);
-        var m = new THREE.Object3D();
-        faces.forEach(function (f, i) {
-          m.position.set(f[0], f[1], f[2]);
+      var m = new THREE.Object3D();
+      ["quiet", "shell", "corridor"].forEach(function (kind) {
+        var list = model.walls[kind];
+        if (!list.length) return;
+        var mesh = new THREE.InstancedMesh(wallGeo, wallMats[kind], list.length);
+        list.forEach(function (f, i) {
+          var s = f[3];
+          m.position.set(f[0] - cx + s[0] * 0.5, f[1] - cy + s[1] * 0.5, f[2] - cz + s[2] * 0.5);
           m.rotation.set(0, 0, 0);
-          if (f[3][0]) m.rotation.y = Math.PI / 2;
-          else if (f[3][1]) m.rotation.x = Math.PI / 2;
+          if (s[0]) m.rotation.y = Math.PI / 2;
+          else if (s[1]) m.rotation.x = Math.PI / 2;
           m.updateMatrix();
-          walls.setMatrixAt(i, m.matrix);
+          mesh.setMatrixAt(i, m.matrix);
         });
-        content.add(walls);
-      }
+        content.add(mesh);
+      });
 
-      // Path: runs of consecutive steps inside the window.
-      var nodes = path.filter(inWin);
-      if (nodes.length) {
-        var dots = new THREE.InstancedMesh(nodeGeo, pathMat, nodes.length);
-        var o = new THREE.Object3D();
-        nodes.forEach(function (p, i) {
-          o.position.set(p.x - cx, p.y - cy, p.z - cz);
-          o.updateMatrix();
-          dots.setMatrixAt(i, o.matrix);
+      var path = model.path;
+      if (path.length) {
+        var plain = [];
+        var marked = [];
+        path.forEach(function (n) {
+          (n.events && n.events.length ? marked : plain).push(n);
         });
-        content.add(dots);
+        [
+          [plain, nodeGeo, pathMat],
+          [marked, eventGeo, eventMat],
+        ].forEach(function (set) {
+          if (!set[0].length) return;
+          var mesh = new THREE.InstancedMesh(set[1], set[2], set[0].length);
+          set[0].forEach(function (n, i) {
+            m.position.set(n.x - cx, n.y - cy, n.z - cz);
+            m.rotation.set(0, 0, 0);
+            m.updateMatrix();
+            mesh.setMatrixAt(i, m.matrix);
+          });
+          content.add(mesh);
+        });
         var pts = [];
         for (var i = 1; i < path.length; i++) {
           var a = path[i - 1];
           var b = path[i];
-          if (!inWin(a) || !inWin(b)) continue;
           if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.z - b.z) !== 1) continue;
           pts.push(new THREE.Vector3(a.x - cx, a.y - cy, a.z - cz), new THREE.Vector3(b.x - cx, b.y - cy, b.z - cz));
         }
         if (pts.length) content.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), linkMat));
         var last = path[path.length - 1];
-        if (last && inWin(last)) {
-          head = new THREE.Mesh(headGeo, headMat);
-          head.position.set(last.x - cx, last.y - cy, last.z - cz);
-          content.add(head);
-        }
+        head = new THREE.Mesh(headGeo, headMat);
+        head.position.set(last.x - cx, last.y - cy, last.z - cz);
+        content.add(head);
       }
 
-      content.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w.nx, w.ny, w.nz)), frameMat));
+      log.innerHTML = "";
+      if (logLines)
+        model.events.slice(-logLines).forEach(function (e) {
+          var line = document.createElement("div");
+          line.textContent = eventLine(e);
+          log.appendChild(line);
+        });
     }
 
     function setStatus(live, text) {
-      dot.style.background = live ? "#3aa8ff" : "#8ea39a";
-      dot.style.boxShadow = live ? "0 0 8px #3aa8ff" : "none";
+      dot.style.background = live ? COLORS.path : "#8ea39a";
+      dot.style.boxShadow = live ? "0 0 8px " + COLORS.path : "none";
       label.textContent = text;
     }
 
@@ -329,19 +379,21 @@
             return;
           }
           hasLive = true;
-          setStatus(true, "LIVE \u00b7 " + (raw.totalEvents || 0) + " EVENTS");
-          var key = raw.exportedAt + "|" + raw.totalEvents + "|" + flattenPath(raw).length;
-          if (key === lastKey) return;
-          lastKey = key;
+          var c = raw.cube;
+          setStatus(true, "LIVE \u00b7 " + c.width + "\u00d7" + c.height + "\u00d7" + c.depth + " \u00b7 " + (raw.totalEvents || 0) + " EVENTS");
+          var path = (raw.pathIndex && raw.pathIndex[0] && raw.pathIndex[0].path) || [];
+          var k = raw.exportedAt + "|" + raw.totalEvents + "|" + path.length;
+          if (k === lastKey) return;
+          lastKey = k;
           build(raw);
         })
         .catch(function () {
           setStatus(false, hasLive ? "SESSION CUBE \u00b7 RECONNECTING" : "SESSION CUBE");
         });
     }
-    build(demoRaw(n));
+    build(demoRaw(5));
     poll();
-    var timer = setInterval(function () {
+    setInterval(function () {
       if (!document.hidden) poll();
     }, POLL_MS);
 
@@ -364,20 +416,20 @@
       }).observe(el);
 
     var prev = performance.now();
-    function frame(now) {
+    function tick(now) {
       var dt = Math.min(0.1, (now - prev) / 1000);
       prev = now;
       if (visible && !document.hidden) {
         turntable.rotation.y += SPIN * dt;
         if (head) {
-          var s = 1 + Math.sin(now / 320) * 0.12;
+          var s = 1 + Math.sin(now / 320) * 0.14;
           head.scale.set(s, s, s);
         }
         renderer.render(scene, camera);
       }
-      requestAnimationFrame(frame);
+      requestAnimationFrame(tick);
     }
-    requestAnimationFrame(frame);
+    requestAnimationFrame(tick);
 
     function go() {
       window.open(href, target, target === "_blank" ? "noopener" : undefined);
@@ -389,9 +441,6 @@
         go();
       }
     });
-    el._liveCubeStop = function () {
-      clearInterval(timer);
-    };
   }
 
   function start() {
