@@ -728,6 +728,9 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     let rigs: Rig[] = [];
     let buildQueue: NestCube[] = [];
+    // Detail (wall geometry) add/remove is throttled the same way initial
+    // rig construction is below — see the reasoning at its processing site.
+    let detailQueue: Rig[] = [];
     let rosterKey = "";
     // Order-independent companion to rosterKey — see reconcile() below.
     let rosterSortedKey = "";
@@ -904,6 +907,7 @@ export const CubeCanvas = memo(function CubeCanvas({
         scene.remove(rig.group);
       }
       rigs = [];
+      detailQueue = [];
     };
 
     const frameHome = () => {
@@ -1233,14 +1237,30 @@ export const CubeCanvas = memo(function CubeCanvas({
         })
         .join("|");
       if (stamp !== detailStamp) {
-        for (const rig of rigs) {
+        // Queue detail add/remove instead of doing it for every rig that
+        // needs it in one synchronous pass. With hundreds or thousands of
+        // rigs — e.g. right after "select all" realizes a large clone
+        // batch at once — building full wall geometry for all of them in
+        // a single frame blocks the main thread long enough to look like
+        // the whole scene just reset, the same class of problem the
+        // buildQueue above already exists to avoid for initial construction.
+        detailQueue = rigs.filter((rig) => {
+          const want = showAll || selectedSet.has(rig.id);
+          const has = !!rig.detail;
+          if (want === has) return false;
+          return want ? wallCount(rig.model) > 0 : true;
+        });
+        detailStamp = stamp;
+      }
+      if (detailQueue.length) {
+        const batch = detailQueue.splice(0, tightGpu ? 1 : 4);
+        for (const rig of batch) {
           const want = showAll || selectedSet.has(rig.id);
           if (want && wallCount(rig.model) > 0) {
             if (!rig.detail) addDetail(rig);
           } else clearDetail(rig);
           if (isLiveId(rig.id)) rig.ghost.visible = false;
         }
-        detailStamp = stamp;
         layoutDirty = true;
       }
     };
