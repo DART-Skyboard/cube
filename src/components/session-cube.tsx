@@ -31,6 +31,7 @@ import {
 import type { CubeView, FocusRequest } from "@/components/cube-scene";
 import type { Bar } from "@/components/nest-charts";
 import { cn } from "@/lib/utils";
+import { formatShell64Ago, useShell64Live } from "@/lib/shell64-live";
 
 const LIVE_ID = "live-feed";
 
@@ -316,6 +317,8 @@ export function SessionCube() {
   const [liveActive, setLiveActive] = useState(false);
   const [liveCubeId, setLiveCubeId] = useState<string | null>(null);
   const [liveStatus, setLiveStatus] = useState("");
+  // Shell 64 (shell64.dartmeadow.com) activity: totals + recent ops, polled every 30 s while the live feed is on.
+  const { data: shell64, pulse: shell64Pulse } = useShell64Live(liveOn);
   const liveSlotRef = useRef<LoadedCube["slot"] | null>(null);
   const liveMazeRef = useRef("");
   const liveSeenRef = useRef<string | null>(null);
@@ -823,6 +826,7 @@ export function SessionCube() {
                 onReady={onReady}
                 onGpuLost={onGpuLost}
                 liveCubeId={liveCubeId}
+                flashToken={shell64Pulse}
               />
             </Suspense>
           ) : null}
@@ -1016,6 +1020,20 @@ export function SessionCube() {
               </div>
               {notice ? <p className="mt-2 text-xs text-mist">{notice}</p> : null}
               {liveOn && liveStatus ? <p className="mt-1 text-xs text-verdigris">{liveStatus}</p> : null}
+              {liveOn && shell64 ? (
+                <div className="mt-1 text-xs text-mist" data-testid="shell64-live" title="Calculations on shell64.dartmeadow.com, across every user">
+                  <p className="text-verdigris">
+                    {shell64.activeSessions > 0 ? "● " : ""}Shell 64 · {shell64.activeSessions} active · {shell64.calcsPerMin}/min ·{" "}
+                    {shell64.totalCalcs.toLocaleString()} total
+                    {shell64.activeSessions === 0 && shell64.lastActivityAt ? ` · last ${formatShell64Ago(shell64.lastActivityAt)}` : ""}
+                  </p>
+                  {shell64.recent.slice(-3).map((op, index) => (
+                    <p key={`${op.ts}-${index}`} className="truncate">
+                      {Number.isFinite(Date.parse(op.ts)) ? new Date(op.ts).toLocaleTimeString() : ""} {op.op} {op.detail}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
                 </div>
               </div>
             </div>

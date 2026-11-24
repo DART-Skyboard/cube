@@ -325,6 +325,7 @@ export const CubeCanvas = memo(function CubeCanvas({
   onReady,
   onGpuLost,
   liveCubeId,
+  flashToken,
 }: {
   cubes: NestCube[];
   selectedId: string;
@@ -344,6 +345,8 @@ export const CubeCanvas = memo(function CubeCanvas({
   onReady?: () => void;
   onGpuLost?: () => void;
   liveCubeId?: string | null;
+  /** Bump to flash the live cube's halo (Shell 64 activity). */
+  flashToken?: number;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const live = useRef({
@@ -360,6 +363,7 @@ export const CubeCanvas = memo(function CubeCanvas({
     onReady,
     onGpuLost,
     liveCubeId,
+    flashToken,
   });
   live.current = {
     cubes,
@@ -375,6 +379,7 @@ export const CubeCanvas = memo(function CubeCanvas({
     onReady,
     onGpuLost,
     liveCubeId,
+    flashToken,
   };
 
   useEffect(() => {
@@ -624,6 +629,11 @@ export const CubeCanvas = memo(function CubeCanvas({
     liveOutlineLine.visible = false;
     liveGlowLine.visible = false;
     scene.add(liveOutlineLine, liveGlowLine);
+    // Shell 64 flash: the live halo jumps to Shell 64 cyan and full glow, then eases back to green.
+    const liveGreen = new THREE.Color(0x39ff8a);
+    const shell64Cyan = new THREE.Color(0x5ff6ff);
+    let flashSeen = live.current.flashToken ?? 0;
+    let flash = 0;
     const isLiveId = (id: string) => id === live.current.liveCubeId || id.startsWith("live-");
     const placeLiveOutline = (rig: Rig | undefined) => {
       if (!rig) {
@@ -1343,6 +1353,17 @@ export const CubeCanvas = memo(function CubeCanvas({
       lastNow = now;
       clock += delta;
       const current = live.current;
+      if ((current.flashToken ?? 0) !== flashSeen) {
+        flashSeen = current.flashToken ?? 0;
+        flash = 1;
+      }
+      if (flash > 0) {
+        flash = Math.max(0, flash - delta / 1.6);
+        const f = flash * flash;
+        liveGlowMat.color.copy(liveGreen).lerp(shell64Cyan, f);
+        liveOutlineMat.color.copy(liveGreen).lerp(shell64Cyan, f);
+        liveGlowMat.opacity = 0.4 + 0.6 * f;
+      }
       try {
         reconcile();
         const selKey = current.selectedIds.join("|");
